@@ -792,7 +792,57 @@ void EbpfTransformer::operator()(const Call& call) {
     constexpr Reg r0_reg{R0_RETURN_VALUE};
     const auto r0_pack = reg_pack(r0_reg);
     dom.rcp.values.havoc(r0_pack.stack_numeric_size);
-    if (call.is_map_lookup) {
+    
+    if (call.name == "map_get") {
+        if (call.singles.size() < 3) {
+            dom.rcp.havoc_register_except_type(r0_reg);
+            dom.rcp.assign_type(r0_reg, T_NUM);
+            goto out;
+        }
+
+        const Reg len_reg = call.singles[2].reg;
+        const auto len_pack = reg_pack(len_reg);
+
+        dom.rcp.assign_type(r0_reg, T_SHARED);
+        assign_valid_ptr(r0_reg, false);
+
+        // Model pointer as base of a region of size len.
+        dom.rcp.values.assign(r0_pack.shared_offset, 0);
+        dom.rcp.values.assign(r0_pack.shared_region_size, len_pack.svalue);
+        goto out;
+    } else if (call.name == "map_lookup") {
+        if (call.singles.size() < 3) {
+            dom.rcp.havoc_register_except_type(r0_reg);
+            dom.rcp.assign_type(r0_reg, T_NUM);
+            goto out;
+        }
+
+        const Reg elsize_reg = call.singles[2].reg;
+        const auto elsize_pack = reg_pack(elsize_reg);
+
+        dom.rcp.assign_type(r0_reg, T_SHARED);
+        assign_valid_ptr(r0_reg, true);
+
+        dom.rcp.values.assign(r0_pack.shared_offset, 0);
+        dom.rcp.values.assign(r0_pack.shared_region_size, elsize_pack.svalue);
+        goto out;
+    } else if (call.name == "ebpf_queue_tail") {
+        if (call.singles.size() < 2) {
+            dom.rcp.havoc_register_except_type(r0_reg);
+            dom.rcp.assign_type(r0_reg, T_NUM);
+            goto out;
+        }
+
+        const Reg elsize_reg = call.singles[1].reg;
+        const auto elsize_pack = reg_pack(elsize_reg);
+
+        dom.rcp.assign_type(r0_reg, T_SHARED);
+        assign_valid_ptr(r0_reg, true);
+
+        dom.rcp.values.assign(r0_pack.shared_offset, 0);
+        dom.rcp.values.assign(r0_pack.shared_region_size, elsize_pack.svalue);
+        goto out;
+    } else if (call.is_map_lookup) {
         // This is the only way to get a null pointer
         if (maybe_fd_reg) {
             if (const auto map_type = dom.get_map_type(*maybe_fd_reg)) {
