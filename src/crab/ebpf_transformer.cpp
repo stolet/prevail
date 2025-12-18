@@ -793,7 +793,7 @@ void EbpfTransformer::operator()(const Call& call) {
     const auto r0_pack = reg_pack(r0_reg);
     dom.rcp.values.havoc(r0_pack.stack_numeric_size);
     
-    if (call.name == "map_get") {
+    if (call.name == "ebpf_map_get") {
         if (call.singles.size() < 3) {
             dom.rcp.havoc_register_except_type(r0_reg);
             dom.rcp.assign_type(r0_reg, T_NUM);
@@ -810,7 +810,7 @@ void EbpfTransformer::operator()(const Call& call) {
         dom.rcp.values.assign(r0_pack.shared_offset, 0);
         dom.rcp.values.assign(r0_pack.shared_region_size, len_pack.svalue);
         goto out;
-    } else if (call.name == "map_lookup") {
+    } else if (call.name == "ebpf_map_lookup") {
         if (call.singles.size() < 3) {
             dom.rcp.havoc_register_except_type(r0_reg);
             dom.rcp.assign_type(r0_reg, T_NUM);
