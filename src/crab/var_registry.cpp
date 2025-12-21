@@ -136,6 +136,7 @@ static std::vector<std::string> default_variable_names() {
         "meta_size",
         "meta_offset",
         "packet_size",
+        "qe_size",
     };
 }
 
@@ -185,6 +186,7 @@ Variable VariableRegistry::kind_var(const DataKind kind, const Variable type_var
 
 Variable VariableRegistry::meta_offset() { return make("meta_offset"); }
 Variable VariableRegistry::packet_size() { return make("packet_size"); }
+Variable VariableRegistry::qe_size() { return make("qe_size"); }
 Variable VariableRegistry::loop_counter(const std::string& label) { return make("pc[" + label + "]"); }
 
 static bool ends_with(const std::string& str, const std::string& suffix) {

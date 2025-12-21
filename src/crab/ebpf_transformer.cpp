@@ -425,10 +425,9 @@ static void do_load_ctx(TypeToNumDomain& rcp, const Reg& target_reg, const Linea
     }
 
     const ebpf_context_descriptor_t* desc = thread_local_program_info->type.context_descriptor;
-
     const RegPack& target = reg_pack(target_reg);
 
-    if (desc->end < 0) {
+    if (desc->end < 0 && desc->qe_end < 0) {
         rcp.havoc_register(target_reg);
         rcp.assign_type(target_reg, T_NUM);
         return;
@@ -438,8 +437,8 @@ static void do_load_ctx(TypeToNumDomain& rcp, const Reg& target_reg, const Linea
     const std::optional<Number> maybe_addr = interval.singleton();
     rcp.havoc_register(target_reg);
 
-    const bool may_touch_ptr =
-        interval.contains(desc->data) || interval.contains(desc->meta) || interval.contains(desc->end);
+    bool may_touch_ptr = interval.contains(desc->data) || interval.contains(desc->meta) || 
+        interval.contains(desc->end) || interval.contains(desc->qe) || interval.contains(desc->qe_end);
 
     if (!maybe_addr) {
         if (may_touch_ptr) {
@@ -452,22 +451,37 @@ static void do_load_ctx(TypeToNumDomain& rcp, const Reg& target_reg, const Linea
 
     const Number addr = *maybe_addr;
 
-    // We use offsets for packet data, data_end, and meta during verification,
-    // but at runtime they will be 64-bit pointers.  We can use the offset values
-    // for verification like we use map_fd's as a proxy for maps which
-    // at runtime are actually 64-bit memory pointers.
     const int offset_width = desc->end - desc->data;
+    const int qe_offset_width = desc->qe_end - desc->qe;
+
+    bool matched_packet_ptr_field = false;
+    bool matched_qe_ptr_field = false;
+
     if (addr == desc->data) {
+        matched_packet_ptr_field = true;
         if (width == offset_width) {
             rcp.values.assign(target.packet_offset, 0);
         }
     } else if (addr == desc->end) {
+        matched_packet_ptr_field = true;
         if (width == offset_width) {
             rcp.values.assign(target.packet_offset, variable_registry->packet_size());
         }
     } else if (addr == desc->meta) {
+        matched_packet_ptr_field = true;
         if (width == offset_width) {
             rcp.values.assign(target.packet_offset, variable_registry->meta_offset());
+        }
+
+    } else if (addr == desc->qe) {
+        matched_qe_ptr_field = true;
+        if (width == qe_offset_width) {
+            rcp.values.assign(target.shared_offset, 0);
+        }
+    } else if (addr == desc->qe_end) {
+        matched_qe_ptr_field = true;
+        if (width == qe_offset_width) {
+            rcp.values.assign(target.shared_offset, variable_registry->qe_size());
         }
     } else {
         if (may_touch_ptr) {
@@ -477,8 +491,14 @@ static void do_load_ctx(TypeToNumDomain& rcp, const Reg& target_reg, const Linea
         }
         return;
     }
-    if (width == offset_width) {
+
+    if (matched_packet_ptr_field && width == offset_width) {
         rcp.assign_type(target_reg, T_PACKET);
+        rcp.values.add_constraint(4098 <= target.svalue);
+        rcp.values.add_constraint(target.svalue <= PTR_MAX);
+    } else if (matched_qe_ptr_field && width == qe_offset_width) {
+        rcp.values.assign(target.shared_region_size, variable_registry->qe_size());
+        rcp.assign_type(target_reg, T_SHARED);
         rcp.values.add_constraint(4098 <= target.svalue);
         rcp.values.add_constraint(target.svalue <= PTR_MAX);
     }

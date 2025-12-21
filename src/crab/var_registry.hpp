@@ -39,6 +39,7 @@ class VariableRegistry final {
     Variable kind_var(DataKind kind, Variable type_variable);
     Variable meta_offset();
     Variable packet_size();
+    Variable qe_size();
     std::vector<Variable> get_loop_counters();
     Variable loop_counter(const std::string& label);
     static bool printing_order(const Variable& a, const Variable& b);

@@ -78,6 +78,7 @@ class EbpfDomain final {
     friend void require_join(const std::vector<LinearConstraint>& a_csts, const std::vector<LinearConstraint>& b_csts,
                              const std::vector<LinearConstraint>& over_csts);
     void initialize_packet();
+    void initialize_qe();
 
     StringInvariant to_set() const;
 

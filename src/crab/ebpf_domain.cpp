@@ -338,6 +338,22 @@ void EbpfDomain::initialize_packet() {
     }
 }
 
+void EbpfDomain::initialize_qe() {
+    using namespace dsl_syntax;
+    const auto* desc = thread_local_program_info->type.context_descriptor;
+
+    if (desc->qe_end < 0) {
+        rcp.values.assign(variable_registry->qe_size(), 0);
+        return;
+    }
+
+    havoc(variable_registry->qe_size());
+    add_value_constraint(0 <= variable_registry->qe_size());
+    // Do we want to add a max value size to qe because it might be whole shm?
+    // add_value_constraint(variable_registry->qe_size() < MAX_SHM_SIZE);
+}
+
+
 EbpfDomain EbpfDomain::from_constraints(const std::vector<LinearConstraint>& type_constraints,
                                         const std::vector<LinearConstraint>& value_constraints) {
     EbpfDomain inv;
@@ -395,6 +411,7 @@ EbpfDomain EbpfDomain::setup_entry(const bool init_r1) {
     }
 
     inv.initialize_packet();
+    inv.initialize_qe();
     return inv;
 }
 
