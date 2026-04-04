@@ -862,6 +862,22 @@ void EbpfTransformer::operator()(const Call& call) {
         dom.rcp.values.assign(r0_pack.shared_offset, 0);
         dom.rcp.values.assign(r0_pack.shared_region_size, elsize_pack.svalue);
         goto out;
+    } else if (call.name == "ebpf_queue_head") {
+        if (call.singles.size() < 2) {
+            dom.rcp.havoc_register_except_type(r0_reg);
+            dom.rcp.assign_type(r0_reg, T_NUM);
+            goto out;
+        }
+
+        const Reg elsize_reg = call.singles[1].reg;
+        const auto elsize_pack = reg_pack(elsize_reg);
+
+        dom.rcp.assign_type(r0_reg, T_SHARED);
+        assign_valid_ptr(r0_reg, true);
+
+        dom.rcp.values.assign(r0_pack.shared_offset, 0);
+        dom.rcp.values.assign(r0_pack.shared_region_size, elsize_pack.svalue);
+        goto out;
     } else if (call.is_map_lookup) {
         // This is the only way to get a null pointer
         if (maybe_fd_reg) {
