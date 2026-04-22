@@ -69,6 +69,7 @@ class EbpfDomain final {
 
     static EbpfDomain calculate_constant_limits();
     ExtendedNumber get_loop_count_upper_bound() const;
+    ExtendedNumber get_loop_count_upper_bound(const Label& label) const;
     Interval get_r0() const;
 
     static EbpfDomain setup_entry(bool init_r1);

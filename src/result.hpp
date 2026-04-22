@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
+#include <cstdint>
 #include <map>
 #include <optional>
 
@@ -20,6 +21,8 @@ struct AnalysisResult {
     std::map<Label, InvariantMapPair> invariants;
     bool failed = false;
     int max_loop_count{};
+    uint64_t worst_instr_count{};
+    int worst_instr_count_unbounded{};
     Interval exit_value = Interval::top();
 
     [[nodiscard]]

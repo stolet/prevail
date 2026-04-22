@@ -299,6 +299,10 @@ ExtendedNumber EbpfDomain::get_loop_count_upper_bound() const {
     return ub;
 }
 
+ExtendedNumber EbpfDomain::get_loop_count_upper_bound(const Label& label) const {
+    return rcp.values.eval_interval(variable_registry->loop_counter(to_string(label))).ub();
+}
+
 Interval EbpfDomain::get_r0() const { return rcp.values.eval_interval(reg_pack(R0_RETURN_VALUE).svalue); }
 
 std::ostream& operator<<(std::ostream& o, const TypeDomain& dom) { return o << dom.inv; }

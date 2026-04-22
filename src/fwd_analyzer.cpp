@@ -1,5 +1,7 @@
 // Copyright (c) Prevail Verifier contributors.
 // SPDX-License-Identifier: Apache-2.0
+#include <map>
+#include <set>
 #include <utility>
 #include <variant>
 #include <ranges>
@@ -30,6 +32,17 @@ void ebpf_verifier_clear_thread_local_state() {
 }
 
 class InterleavedFwdFixpointIterator final {
+    struct WorstInstrCount {
+        uint64_t count{};
+        bool unbounded{};
+    };
+
+    struct PathSummary {
+        bool reaches_exit{};
+        uint64_t count{};
+        bool unbounded{};
+    };
+
     const Program& _prog;
     const Cfg& _cfg;
     const Wto _wto;
@@ -133,6 +146,203 @@ class InterleavedFwdFixpointIterator final {
             return m->cast_to<int32_t>();
         }
         return std::numeric_limits<int>::max();
+    }
+
+    [[nodiscard]]
+    static bool is_counted_instruction(const Instruction& ins) {
+        return !std::holds_alternative<Undefined>(ins) && !std::holds_alternative<Assume>(ins) &&
+               !std::holds_alternative<IncrementLoopCounter>(ins);
+    }
+
+    [[nodiscard]]
+    static WorstInstrCount unknown_unbounded() {
+        return {.count = 0, .unbounded = true};
+    }
+
+    [[nodiscard]]
+    static WorstInstrCount overflow_unbounded() {
+        return {.count = std::numeric_limits<uint64_t>::max(), .unbounded = true};
+    }
+
+    [[nodiscard]]
+    static WorstInstrCount combine_unbounded(const WorstInstrCount& left, const WorstInstrCount& right) {
+        if (left.count == std::numeric_limits<uint64_t>::max() || right.count == std::numeric_limits<uint64_t>::max()) {
+            return overflow_unbounded();
+        }
+        return unknown_unbounded();
+    }
+
+    [[nodiscard]]
+    static bool checked_add(const uint64_t left, const uint64_t right, uint64_t& out) {
+        if (std::numeric_limits<uint64_t>::max() - left < right) {
+            return false;
+        }
+        out = left + right;
+        return true;
+    }
+
+    [[nodiscard]]
+    static bool checked_mul(const uint64_t left, const uint64_t right, uint64_t& out) {
+        if (left != 0 && std::numeric_limits<uint64_t>::max() / left < right) {
+            return false;
+        }
+        out = left * right;
+        return true;
+    }
+
+    static void collect_labels(const CycleOrLabel& component, std::vector<Label>& labels) {
+        if (const auto label = std::get_if<Label>(&component)) {
+            labels.push_back(*label);
+            return;
+        }
+        const auto& cycle = *std::get<std::shared_ptr<WtoCycle>>(component);
+        for (const auto& sub_component : cycle) {
+            collect_labels(sub_component, labels);
+        }
+    }
+
+    [[nodiscard]]
+    std::optional<uint64_t> get_loop_bound(const Label& head) const {
+        ExtendedNumber loop_count{0};
+        for (const auto& inv_pair : std::views::values(result.invariants)) {
+            if (inv_pair.post.is_bottom()) {
+                continue;
+            }
+            loop_count = std::max(loop_count, inv_pair.post.get_loop_count_upper_bound(head));
+        }
+
+        const auto count = loop_count.number();
+        if (!count || !count->fits<uint64_t>()) {
+            return {};
+        }
+        return count->cast_to<uint64_t>();
+    }
+
+    [[nodiscard]]
+    WorstInstrCount summarize_component(const CycleOrLabel& component) const {
+        if (const auto label = std::get_if<Label>(&component)) {
+            return {.count = is_counted_instruction(_prog.instruction_at(*label)) ? 1ULL : 0ULL, .unbounded = false};
+        }
+
+        const auto& cycle = *std::get<std::shared_ptr<WtoCycle>>(component);
+        if (!thread_local_options.cfg_opts.check_for_termination) {
+            return unknown_unbounded();
+        }
+
+        uint64_t body_count = 0;
+        for (const auto& sub_component : cycle) {
+            const WorstInstrCount summary = summarize_component(sub_component);
+            if (summary.unbounded) {
+                return summary;
+            }
+            if (!checked_add(body_count, summary.count, body_count)) {
+                return overflow_unbounded();
+            }
+        }
+
+        const auto loop_bound = get_loop_bound(cycle.head());
+        if (!loop_bound.has_value()) {
+            return unknown_unbounded();
+        }
+
+        uint64_t loop_count = 0;
+        if (!checked_mul(*loop_bound, body_count, loop_count)) {
+            return overflow_unbounded();
+        }
+        return {.count = loop_count, .unbounded = false};
+    }
+
+    [[nodiscard]]
+    WorstInstrCount worst_instr_count() const {
+        const std::vector<CycleOrLabel> components{_wto.begin(), _wto.end()};
+        std::vector<WorstInstrCount> summaries;
+        summaries.reserve(components.size());
+        std::map<Label, size_t> label_to_component;
+
+        for (size_t i = 0; i < components.size(); ++i) {
+            summaries.push_back(summarize_component(components[i]));
+            std::vector<Label> labels;
+            collect_labels(components[i], labels);
+            for (const Label& label : labels) {
+                label_to_component.emplace(label, i);
+            }
+        }
+
+        std::vector<std::set<size_t>> successors(components.size());
+        for (size_t i = 0; i < components.size(); ++i) {
+            std::vector<Label> labels;
+            collect_labels(components[i], labels);
+            for (const Label& label : labels) {
+                for (const Label& succ : _cfg.children_of(label)) {
+                    const auto it = label_to_component.find(succ);
+                    if (it != label_to_component.end() && it->second != i) {
+                        successors[i].insert(it->second);
+                    }
+                }
+            }
+        }
+
+        const auto entry_it = label_to_component.find(Label::entry);
+        const auto exit_it = label_to_component.find(Label::exit);
+        if (entry_it == label_to_component.end() || exit_it == label_to_component.end()) {
+            return unknown_unbounded();
+        }
+
+        const size_t exit_index = exit_it->second;
+        std::vector<PathSummary> path_summaries(components.size());
+        for (size_t i = components.size(); i-- > 0;) {
+            if (i == exit_index) {
+                path_summaries[i] = {.reaches_exit = true, .count = 0, .unbounded = false};
+                continue;
+            }
+
+            bool found_path = false;
+            bool has_unbounded_path = summaries[i].unbounded;
+            uint64_t unbounded_count = summaries[i].count == std::numeric_limits<uint64_t>::max()
+                                           ? std::numeric_limits<uint64_t>::max()
+                                           : 0;
+            uint64_t best_bounded = 0;
+            for (const size_t succ : successors[i]) {
+                const PathSummary& succ_summary = path_summaries[succ];
+                if (!succ_summary.reaches_exit) {
+                    continue;
+                }
+                found_path = true;
+                has_unbounded_path = has_unbounded_path || succ_summary.unbounded;
+                if (succ_summary.unbounded) {
+                    unbounded_count =
+                        combine_unbounded(summaries[i], WorstInstrCount{.count = succ_summary.count, .unbounded = true})
+                            .count;
+                    continue;
+                }
+                if (!succ_summary.unbounded) {
+                    uint64_t candidate = 0;
+                    if (!checked_add(summaries[i].count, succ_summary.count, candidate)) {
+                        has_unbounded_path = true;
+                        unbounded_count = std::numeric_limits<uint64_t>::max();
+                    } else {
+                        best_bounded = std::max(best_bounded, candidate);
+                    }
+                }
+            }
+
+            if (!found_path) {
+                continue;
+            }
+
+            if (has_unbounded_path) {
+                path_summaries[i] = {.reaches_exit = true, .count = unbounded_count, .unbounded = true};
+                continue;
+            }
+
+            path_summaries[i] = {.reaches_exit = true, .count = best_bounded, .unbounded = false};
+        }
+
+        const PathSummary& entry_summary = path_summaries[entry_it->second];
+        if (!entry_summary.reaches_exit) {
+            return unknown_unbounded();
+        }
+        return {.count = entry_summary.count, .unbounded = entry_summary.unbounded};
     }
 
   public:
@@ -274,6 +484,9 @@ AnalysisResult InterleavedFwdFixpointIterator::run(const Program& prog, EbpfDoma
     for (const auto& component : analyzer._wto) {
         std::visit(analyzer, component);
     }
+    const WorstInstrCount worst_instr_count = analyzer.worst_instr_count();
+    result.worst_instr_count = worst_instr_count.count;
+    result.worst_instr_count_unbounded = worst_instr_count.unbounded ? 1 : 0;
     if (!result.failed && thread_local_options.cfg_opts.check_for_termination) {
         analyzer.find_termination_errors(prog);
         if (!result.failed) {
